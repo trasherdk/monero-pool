@@ -743,7 +743,7 @@ process_blocks(block_t *blocks, size_t count)
             }
             block_t nb;
             memcpy(&nb, sb, sizeof(block_t));
-            if (ib->status & BLOCK_ORPHANED)
+            if (memcmp(ib->hash, sb->hash, 64) != 0)
             {
                 log_debug("Orphaned block at height %"PRIu64, ib->height);
                 nb.status |= BLOCK_ORPHANED;
@@ -751,11 +751,19 @@ process_blocks(block_t *blocks, size_t count)
                 mdb_cursor_put(cursor, &key, &new_val, MDB_CURRENT);
                 continue;
             }
-            if (memcmp(ib->hash, sb->hash, 64) == 0
-                    && memcmp(ib->prev_hash, sb->prev_hash, 64) != 0)
+            if (memcmp(ib->prev_hash, sb->prev_hash, 64) != 0)
             {
-                log_warn("Block with matching heights but differing parents! "
+                log_warn("Block with matching height and hash "
+                        "but differing parent! "
                         "Setting orphaned.\n");
+                nb.status |= BLOCK_ORPHANED;
+                MDB_val new_val = {sizeof(block_t), (void*)&nb};
+                mdb_cursor_put(cursor, &key, &new_val, MDB_CURRENT);
+                continue;
+            }
+            if (ib->status & BLOCK_ORPHANED)
+            {
+                log_debug("Orphaned block at height %"PRIu64, ib->height);
                 nb.status |= BLOCK_ORPHANED;
                 MDB_val new_val = {sizeof(block_t), (void*)&nb};
                 mdb_cursor_put(cursor, &key, &new_val, MDB_CURRENT);
@@ -1721,9 +1729,9 @@ rpc_on_wallet_transferred(const char* data, rpc_callback_t *callback)
         int ec = json_object_get_int(code);
         const char *em = json_object_get_string(message);
         log_error("Error (%d) with wallet transfer: %s", ec, em);
-        goto cleanup;
     }
-    log_info("Payout transfer successfull");
+    else
+        log_info("Payout transfer successfull");
 
     int rc;
     char *err;
@@ -1764,6 +1772,11 @@ rpc_on_wallet_transferred(const char* data, rpc_callback_t *callback)
         }
         uint64_t current_amount = *(uint64_t*)val.mv_data;
         current_amount -= payment->amount;
+        if (error)
+        {
+            log_warn("Error seen on transfer for %s with amount %"PRIu64,
+                    payment->address, payment->amount);
+        }
         MDB_val new_val = {sizeof(current_amount), (void*)&current_amount};
         rc = mdb_cursor_put(cursor, &key, &new_val, MDB_CURRENT);
         if (rc != 0)
